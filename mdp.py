@@ -3,8 +3,10 @@ import json
 import copy
 import argparse
 import random
+import matplotlib.pyplot as plt
 
-# Visualise the map
+#### Common functions
+# Print the environment in a readable manner
 def printEnvironment(map, row, col, reward, whitespace_reward, policy=False, init=False):
     p_map = ""
     for r in range(row):
@@ -25,58 +27,65 @@ def printEnvironment(map, row, col, reward, whitespace_reward, policy=False, ini
                 if init:
                     reward[r][c] = whitespace_reward
                     map[r][c] = 0
-            p_map += f' {val.ljust(5)} |'
+            p_map += f' {val.ljust(20)} |'
         p_map += '\n'
     print(p_map)
-    # print('reward Map')
-    # for r in reward:
-    #     print(r)
 
-# Get the utility of the state reached by performing the given action from the given state
+
+# Given an action, get utility of the next state reached
 def getU(U, r, c, row, col, actions, action):
-    dr, dc = actions[action]
-    newR, newC = r+dr, c+dc
-    if newR < 0 or newC < 0 or newR >= row or newC >= col or (U[newR][newC] == 99): # collide with the boundary or the wall
-        return U[r][c]
-    else:
-        return U[newR][newC]
+    # get row and col index of next state
+    add_r, add_c = actions[action]
+    next_r, next_c = r + add_r, c + add_c
 
-# Calculate the utility of a state given an action
+    # check if collide with the boundary or the wall
+    if next_r < 0 or next_c < 0 or next_r >= row or next_c >= col or (U[next_r][next_c] == 99):
+        return U[r][c] # return original if hit boundary or wall
+    else:
+        return U[next_r][next_c] # return next state
+
+# Given an action, calculate the utlility
 def calculateU(U, r, c, reward, discount, row,col, actions, action):
     u = reward[r][c]
+    # transition probability x discount factor x utility given an action
     u += 0.1 * discount * getU(U, r, c, row, col, actions, (action-1) % 4)
     u += 0.8 * discount * getU(U, r, c, row, col, actions, action)
     u += 0.1 * discount * getU(U, r, c, row, col, actions, (action+1) % 4)
     return u
+#### End of Common functions
 
-# method for value iteration
-def valueIteration(U, row, col, num_actions, max_error, discount, reward, actions, whitespace_reward):
+#### Solution: Value Iteration
+def valueIteration(U, row, col, num_actions, threshold, discount, reward, actions, whitespace_reward, plotter):
     iteration = 0
     original = copy.deepcopy(U)
     while True:
-        iteration+=1
         nextU = copy.deepcopy(original)
-        error = 0
+        change = 0
+        # iterate all states
         for r in range(row):
             for c in range(col):
-                if U[r][c] == 99:
-                    continue
-                # bellman equation
+                if U[r][c] == 99: continue # skip walls
+                # Bellman update
                 nextU[r][c] = max([calculateU(U, r, c, reward, discount, row, col, actions, action) for action in range(num_actions)])
-                error = max(error, abs(nextU[r][c] - U[r][c]))
+                change = max(change, abs(nextU[r][c] - U[r][c]))
+                plotter[f'{r}-{c}'].append(nextU[r][c]) # for plotting
+        # U <-- U'
         U = nextU
         printEnvironment(U, row, col, reward, whitespace_reward)
-        if error < max_error * (1-discount) / discount:
+        iteration+=1
+        # if change < threshold stop value iteration
+        if change < threshold * (1 - discount) / discount:
             break
     print(f'Total iteration {iteration}')
-    return U
+    return U, iteration
 
-# Get the optimal policy from U
+# Get the optimal policy from U after value iterations completed
 def getOptimalPolicy(U, row, col, num_actions, reward, discount, actions):
-    policy = [[-1 for j in range(col)] for i in range(row)]
+    policy = [[-1 for j in range(col)] for i in range(row)] # initialise policy
+    # iterate all states
     for r in range(row):
         for c in range(col):
-            if U[r][c] == 99:
+            if U[r][c] == 99: # skipp wall
                 policy[r][c] = 99
                 continue
             # Choose the action that maximizes the utility
@@ -87,36 +96,43 @@ def getOptimalPolicy(U, row, col, num_actions, reward, discount, actions):
                     maxAction, maxU = action, u
             policy[r][c] = maxAction
     return policy
+#### End of Solution: Value Iteration
 
+#### Solution: Policy Iteration
 # Perform some simplified value iteration steps to get an approximation of the utilities
-def policyEvaluation(policy, U, reward, discount, row, col, actions, max_error):
+def policyEvaluation(policy, U, reward, discount, row, col, actions, threshold, k):
     original = copy.deepcopy(U)
-    while True:
+    i = 0
+    # k iterations for modified policy iteration
+    while i < k:
         nextU = copy.deepcopy(original)
-        error = 0
+        change = 0
+        # iterate all states
         for r in range(row):
             for c in range(col):
-                if U[r][c] == 99:
+                if U[r][c] == 99: # skipp wall
                     policy[r][c] = 99
                     continue
-                nextU[r][c] = calculateU(U, r, c, reward, discount, row, col, actions, policy[r][c]) # simplified Bellman update
-                error = max(error, abs(nextU[r][c]-U[r][c]))
+                # Bellman update without max operator
+                nextU[r][c] = calculateU(U, r, c, reward, discount, row, col, actions, policy[r][c])
+                change = max(change, abs(nextU[r][c]-U[r][c]))
         U = nextU
-        if error < max_error * (1-discount) / discount:
-            break
+        i += 1
     return U
 
-def policyIteration(policy, U, reward, discount, row, col, actions, num_actions, max_error, whitespace_reward):
+def policyIteration(policy, U, reward, discount, row, col, actions, num_actions, threshold, whitespace_reward, k, plotter):
     iteration = 0
     while True:
         iteration+=1
-        U = policyEvaluation(policy, U, reward, discount, row, col, actions, max_error)
+        U = policyEvaluation(policy, U, reward, discount, row, col, actions, threshold, k)
         unchanged = True
+        # iterate all states
         for r in range(row):
             for c in range(col):
-                if U[r][c] == 99:
-                    policy[r][c] = 99
+                if U[r][c] == 99: # skip wall
+                    policy[r][c] = 99 
                     continue
+                # find action that maximise utility
                 maxAction, maxU = None, -float("inf")
                 for action in range(num_actions):
                     u = calculateU(U, r, c, reward, discount, row, col, actions, action)
@@ -125,38 +141,42 @@ def policyIteration(policy, U, reward, discount, row, col, actions, num_actions,
                 if maxU > calculateU(U, r, c, reward, discount, row, col, actions, policy[r][c]):
                     policy[r][c] = maxAction # the action that maximizes the utility
                     unchanged = False
-        if unchanged:
+                plotter[f'{r}-{c}'].append(U[r][c])
+        if unchanged: # if policy changed, stop policy iteration
             break
+        printEnvironment(U, row, col, reward, whitespace_reward)
         printEnvironment(policy, row, col, reward, whitespace_reward)
     print(f'Total iteration {iteration}')
-    return policy
+    return policy, iteration
+#### End of Solution: Policy Iteration
 
-
-# main method
+#### main method
 def main():
+    # init variables
     num_actions = 4
     actions = [(1, 0), (0, -1), (-1, 0), (0, 1)] # Down, Left, Up, Right
     reward = None
     U = []
+    plotter = {}
 
     # Get arguments
     parser = argparse.ArgumentParser(description='Markov Decision Process, a grid world example involving value and policy iteration.')
     parser.add_argument('--discount', type=float, default=0.99, help='discount for bellman equation.')
-    parser.add_argument('--max_error', type=float, default=62, help='Max error for epsilon value.')
+    parser.add_argument('--threshold', type=float, default=62, help='Max change for epsilon value.')
     parser.add_argument('--whitespace_reward', type=float, default=-0.04, help='Rewards for the white tiles.')
-    parser.add_argument('--row', type=float, default=6, help='Number of rows in map.')
-    parser.add_argument('--col', type=float, default=6, help='Number of columns in map.')
+    parser.add_argument('--k', type=float, default=4, help='Number of iterations for policy evaluation.')
     parser.add_argument('--map', type=str, default='./map', help='Filepath to map. Must be in JSON format.')
     parser.add_argument('--algorithm', type=int, default=0, help='Choose \n 0: for value iteration \n 1: policy iteration')
     
     args = parser.parse_args()
     discount = args.discount
-    max_error = args.max_error
+    threshold = args.threshold
     whitespace_reward = args.whitespace_reward
-    row = args.row
-    col = args.col
+    # row = args.row
+    # col = args.col
     map = args.map
     algorithm = args.algorithm
+    k = args.k
 
     # Print the initial environment
     # Load map and reward
@@ -166,6 +186,10 @@ def main():
             row = len(U)
             col = len(U[0])
             reward = [[0 for r in U[0]] for c in U]
+            print(U)
+            for r in range(row):
+                for c in range(col):
+                    if U[r][c] != 99: plotter[f'{r}-{c}'] = []
         else:
             print('Invalid map!')
         # reward = [[0 for i in range(len(U)+1)]for j in range(len(U)+1)]
@@ -175,22 +199,30 @@ def main():
     if algorithm == 0:
         print("Value iteration selected \n")
         # Value iteration
-        U = valueIteration(U, row, col, num_actions, max_error, discount, reward, actions, whitespace_reward)
+        U, iteration = valueIteration(U, row, col, num_actions, threshold, discount, reward, actions, whitespace_reward, plotter)
 
-        # Get the optimal policy from U and print it
+        # Get the optimal policy
         policy = getOptimalPolicy(U, row, col, num_actions, reward, discount, actions)
-        print("The optimal policy is:")
-        printEnvironment(policy, row, col, reward, whitespace_reward, True)
     elif algorithm == 1:
         print("Policy iteration selected \n")
-        policy = [[random.randint(0, 3) for j in range(col)] for i in range(row)]
+        policy = [[random.randint(0, 3) for j in range(col)] for i in range(row)] # random initialized policy
 
         # Policy iteration
-        policy = policyIteration(policy, U, reward, discount, row, col, actions, num_actions, max_error, whitespace_reward)
+        policy, iteration = policyIteration(policy, U, reward, discount, row, col, actions, num_actions, threshold, whitespace_reward, k, plotter)
 
-        # Print the optimal policy
-        print("The optimal policy is:\n")
-        printEnvironment(policy, row, col, reward, whitespace_reward, True)
+    # Print the optimal policy
+    print("The optimal policy is:\n")
+    printEnvironment(policy, row, col, reward, whitespace_reward, True)
+
+    # plot results on graph
+    for r in range(row):
+        for c in range(col):
+            if U[r][c] != 99: 
+                plotter[f'{r}-{c}'] = [x / (min(plotter[f'{r}-{c}']) + (max(plotter[f'{r}-{c}']) - min(plotter[f'{r}-{c}']))) for x in plotter[f'{r}-{c}']] # normalisation
+                plt.plot([i for i in range(iteration)], plotter[f'{r}-{c}'])        
+    plt.xlabel('Iterations')
+    plt.ylabel('State Values')
+    plt.show()
 
 # Program entry point
 if __name__ == "__main__":
